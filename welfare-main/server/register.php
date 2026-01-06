@@ -1,33 +1,69 @@
 <?php
-// Set headers to return JSON response
 header("Content-Type: application/json");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST");
+header("X-Content-Type-Options: nosniff");
 
-// Include the database connection
 include_once 'dbconnect.php';
+include_once 'security_functions.php';
 
-// Check if the request is POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
-    // 1. Get input data (works for both standard form-data and JSON)
-    $username = $_POST['username'] ?? null;
-    $email    = $_POST['email'] ?? null;
-    $password = $_POST['password'] ?? null;
-
-    // 2. Basic Validation
-    if (!$username || !$email || !$password) {
-        echo json_encode(["status" => "error", "message" => "Required fields are missing."]);
-        exit;
-    }
-
     try {
-        // 3. Hash the password
+        // 1. GET INPUTS
+        $username = $_POST['username'] ?? null;
+        $email = $_POST['email'] ?? null;
+        $password = $_POST['password'] ?? null;
+        $confirmPassword = $_POST['confirm_password'] ?? null;
+
+        if (!$username || !$email || !$password) {
+            throw new Exception("Required fields are missing");
+        }
+
+        // DEBUG: Log original input
+        error_log("DEBUG 1 - Original username: " . $username);
+
+        // 2. VALIDATE & ESCAPE USERNAME
+        $username = validateInput($username, 'string', 50);
+        
+        // DEBUG: Log escaped input
+        error_log("DEBUG 2 - After validateInput: " . $username);
+        error_log("DEBUG 2 - Username is null? " . ($username === null ? 'YES' : 'NO'));
+        
+        // Then apply format validation
+        if (!preg_match('/^[a-zA-Z0-9_]{3,50}$/', $username)) {
+            error_log("DEBUG 3 - Regex FAILED - throwing exception");
+            throw new Exception("Invalid username format");
+        }
+
+        error_log("DEBUG 3 - Regex PASSED (this should NOT happen for XSS payload)");
+
+        // 3. VALIDATE & ESCAPE EMAIL
+        $email = validateInput($email, 'email', 100);
+
+        // 4. VALIDATE PASSWORD STRENGTH
+        if (strlen($password) < 8) {
+            throw new Exception("Password must be at least 8 characters");
+        }
+        if (!preg_match('/[A-Z]/', $password)) {
+            throw new Exception("Password must contain uppercase");
+        }
+        if (!preg_match('/[0-9]/', $password)) {
+            throw new Exception("Password must contain number");
+        }
+        if (!preg_match('/[!@#$%^&*]/', $password)) {
+            throw new Exception("Password must contain special character");
+        }
+
+        if ($password !== $confirmPassword) {
+            throw new Exception("Passwords do not match");
+        }
+
+        // 5. HASH PASSWORD
         $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
-        // 4. Prepare SQL to insert user
-        // Note: full_name is handled by the SQL Trigger we created earlier
-        $sql = "INSERT INTO tbl_user (username, email, password) VALUES (:username, :email, :password)";
+        error_log("DEBUG 4 - About to insert username: " . $username);
+
+        // 6. INSERT INTO DATABASE
+        $sql = "INSERT INTO tbl_user (username, email, password) 
+                VALUES (:username, :email, :password)";
         $stmt = $conn->prepare($sql);
         
         $stmt->bindParam(':username', $username);
@@ -35,10 +71,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->bindParam(':password', $hashedPassword);
 
         if ($stmt->execute()) {
-            // 5. Get the ID of the newly created user
+            error_log("DEBUG 5 - INSERT SUCCESSFUL");
             $userId = $conn->lastInsertId();
 
-            // 6. Fetch user data (excluding password) to return in response
             $query = "SELECT user_id, username, email, full_name, ic_number, phone, 
                              household_size, household_income, district, 
                              sub_district, privilege, created_at 
@@ -49,7 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $getUser->execute();
             $userData = $getUser->fetch();
 
-            // 7. Send Success Response
             echo json_encode([
                 "status" => "success",
                 "message" => "Registration successful",
@@ -57,13 +91,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         }
     } catch (PDOException $e) {
-        // Handle Duplicate Entry errors (Username or Email)
+        error_log("PDOException: " . $e->getMessage());
         if ($e->getCode() == 23000) {
-            echo json_encode(["status" => "error", "message" => "Username or Email already exists."]);
+            echo json_encode(["status" => "error", "message" => "Username or Email already exists"]);
         } else {
-            echo json_encode(["status" => "error", "message" => "Database error: " . $e->getMessage()]);
+            echo json_encode(["status" => "error", "message" => "Database error"]);
         }
+    } catch (Exception $e) {
+        error_log("Exception: " . $e->getMessage());
+        echo json_encode(["status" => "error", "message" => $e->getMessage()]);
     }
-} else {
-    echo json_encode(["status" => "error", "message" => "Invalid request method."]);
 }
+?>
